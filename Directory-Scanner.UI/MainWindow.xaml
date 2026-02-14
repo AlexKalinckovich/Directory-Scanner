@@ -3,10 +3,33 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:Directory_Scanner.UI"
+        xmlns:model="clr-namespace:Directory_Scanner.UI.Model"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
+        Title="Directory Scanner" Height="450" Width="800">
+    <Window.DataContext>
+        <model:MainWindowViewModel />
+    </Window.DataContext>
     <Grid>
-
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <StackPanel Orientation="Horizontal" Margin="5">
+            <TextBox Text="{Binding SelectedPath, UpdateSourceTrigger=PropertyChanged}" Width="400" Margin="5"/>
+            <Button Content="Scan" Command="{Binding StartScanCommand}" Margin="5" Padding="10,2"/>
+            <Button Content="Cancel" Command="{Binding CancelScanCommand}" Margin="5" Padding="10,2"/>
+        </StackPanel>
+        <TreeView Grid.Row="1" ItemsSource="{Binding RootItems}" Margin="5">
+            <TreeView.ItemTemplate>
+                <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding Name}" Margin="2"/>
+                        <TextBlock Text=" (" Margin="2"/>
+                        <TextBlock Text="{Binding Size}" Margin="2"/>
+                        <TextBlock Text=" bytes)" Margin="2"/>
+                    </StackPanel>
+                </HierarchicalDataTemplate>
+            </TreeView.ItemTemplate>
+        </TreeView>
     </Grid>
 </Window>
