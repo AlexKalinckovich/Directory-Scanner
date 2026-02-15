@@ -1,163 +1,156 @@
-using Directory_Scanner.Core.Event;
+using System.Collections.Concurrent;
 using Directory_Scanner.Core.FileModels;
+using Directory_Scanner.Core.ScannerEventArgs;
 
 namespace Directory_Scanner.Core.Core;
 
-public class DirectoryScanner
+public sealed class DirectoryScanner
 {
     private readonly int _maxConcurrency = Environment.ProcessorCount * 2;
     private readonly SemaphoreSlim _semaphore;
 
+    public event EventHandler<StartProcessingDirectoryEventArgs>? StartProcessingDirectory;
+    public event EventHandler<DirectoryProcessedEventArgs>? DirectoryProcessed;
     public event EventHandler<FileProcessedEventArgs>? FileProcessed;
     public event EventHandler<ProcessingCompletedEventArgs>? ProcessingCompleted;
 
     public DirectoryScanner()
     {
-        _semaphore = new SemaphoreSlim(initialCount: _maxConcurrency, maxCount: _maxConcurrency);
+        _semaphore = new SemaphoreSlim(_maxConcurrency, _maxConcurrency);
     }
 
-    public async Task<FileEntry> ScanDirectoryAsync(
-        string rootPath,
-        CancellationToken cancellationToken = default,
-        TaskCreationOptions options = TaskCreationOptions.None)
+    public async Task<FileEntry> ScanDirectoryAsync(string rootPath, CancellationToken cancellationToken = default)
     {
         AssertPathNotNullOrEmpty(rootPath);
-
         DirectoryInfo rootDir = new DirectoryInfo(rootPath);
-        
         AssertRootDirectoryExists(rootPath, rootDir);
 
         FileEntry rootEntry = new FileEntry(FileType.Directory, rootDir.Name, rootDir.FullName);
-
-        await ScanDirectoryInternalAsync(rootDir, rootEntry, cancellationToken, options).ConfigureAwait(false);
-
+        
+        await ProcessDirectoryAsync(rootDir, rootEntry, cancellationToken).ConfigureAwait(false);
+        
         OnProcessingCompleted(rootEntry);
         
         return rootEntry;
     }
 
-    private static void AssertPathNotNullOrEmpty(string rootPath)
+    private static void AssertPathNotNullOrEmpty(string path)
     {
-        if (string.IsNullOrWhiteSpace(rootPath))
-            throw new ArgumentException("Path cannot be null or empty", nameof(rootPath));
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new ArgumentException("Path cannot be null or empty", nameof(path));
+        }
     }
 
-    private static void AssertRootDirectoryExists(string rootPath, DirectoryInfo rootDir)
+    private static void AssertRootDirectoryExists(string path, DirectoryInfo dirInfo)
     {
-        if (!rootDir.Exists)
-            throw new DirectoryNotFoundException($"Directory not found: {rootPath}");
+        if (!dirInfo.Exists)
+        {
+            throw new DirectoryNotFoundException($"Directory not found: {path}");
+        }
     }
 
-    private async Task ScanDirectoryInternalAsync(
-        DirectoryInfo directory,
-        FileEntry parentEntry,
-        CancellationToken cancellationToken,
-        TaskCreationOptions options)
+    private async Task ProcessDirectoryAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
+        OnStartProcessingDirectory(dirEntry);
         await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-        List<Task> tasks = new List<Task>();
 
+        List<Task> subDirTasks;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            TryEnumerateFiles(directory, parentEntry, cancellationToken);
             
-            TryEnumerateSubdirectories(directory, parentEntry, tasks, cancellationToken, options);
+            TryProcessFiles(dirInfo, dirEntry, cancellationToken);
+            
+            subDirTasks = TryEnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
         }
         finally
         {
             _semaphore.Release();
         }
 
-        if (tasks.Count > 0)
-            await Task.WhenAll(tasks).ConfigureAwait(false);
+        await Task.WhenAll(subDirTasks).ConfigureAwait(false);
+        
+        UpdateTotalDirectorySize(dirEntry);
+        
+        //OnDirectoryProcessed(dirEntry);
     }
 
-    private void TryEnumerateFiles(DirectoryInfo directory, FileEntry parentEntry, CancellationToken cancellationToken)
+    private static void UpdateTotalDirectorySize(FileEntry dirEntry)
+    {
+        foreach (FileEntry child in dirEntry.SubDirectories)
+        {
+            dirEntry.FileSize += child.FileSize;
+        }
+    }
+
+    private void TryProcessFiles(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
         try
         {
-            EnumerateFiles(directory, parentEntry, cancellationToken);
+            ProcessFiles(dirInfo, dirEntry, cancellationToken);
         }
         catch (UnauthorizedAccessException)
         {
-            parentEntry.State = FileState.AccessDenied;
+            dirEntry.State = FileState.AccessDenied;
         }
     }
 
-    private void EnumerateFiles(DirectoryInfo directory, FileEntry parentEntry, CancellationToken cancellationToken)
+    private void ProcessFiles(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
-        foreach (FileInfo file in directory.EnumerateFiles())
+        foreach (FileInfo file in dirInfo.EnumerateFiles())
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            FileEntry fileEntry = CreateFileEntry(file);
-            
-            parentEntry.AddChild(fileEntry);
-            
+            var fileEntry = new FileEntry(FileType.File, file.Name, file.FullName, file.Length)
+            {
+                State = FileState.Ok
+            };
+
             OnFileProcessed(fileEntry);
+            dirEntry.UpdateFileSize(fileEntry);
         }
     }
 
-    private FileEntry CreateFileEntry(FileInfo file)
+    private List<Task> TryEnqueueSubdirectories(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
-        return new FileEntry(FileType.File, file.Name, file.FullName, file.Length)
-        {
-            State = FileState.Ok
-        };
-    }
-
-    private void TryEnumerateSubdirectories(
-        DirectoryInfo directory,
-        FileEntry parentEntry,
-        List<Task> tasks,
-        CancellationToken cancellationToken,
-        TaskCreationOptions options)
-    {
+        List<Task> subDirectoriesProcessTasks;
         try
         {
-            EnumerateSubdirectories(directory, parentEntry, tasks, cancellationToken, options);
+            subDirectoriesProcessTasks = EnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
         }
         catch (UnauthorizedAccessException)
         {
-            parentEntry.State = FileState.AccessDenied;
+            dirEntry.State = FileState.AccessDenied;
+            subDirectoriesProcessTasks = [];
         }
+
+        return subDirectoriesProcessTasks;
     }
 
-    private void EnumerateSubdirectories(
-        DirectoryInfo directory,
-        FileEntry parentEntry,
-        List<Task> tasks,
-        CancellationToken cancellationToken,
-        TaskCreationOptions options)
+    private List<Task> EnqueueSubdirectories(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
-        foreach (DirectoryInfo subDir in directory.EnumerateDirectories())
+        List<Task> subDirectoriesProcessTasks = new List<Task>();
+        foreach (DirectoryInfo subDir in dirInfo.EnumerateDirectories())
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            FileEntry dirEntry = new FileEntry(FileType.Directory, subDir.Name, subDir.FullName);
-            
-            parentEntry.AddChild(dirEntry);
-
-            tasks.Add(CreateSubtask(subDir, dirEntry, cancellationToken, options));
+            FileEntry subDirEntry = new FileEntry(FileType.Directory, subDir.Name, subDir.FullName);
+                
+            dirEntry.AddSubDirectoryChild(subDirEntry);
+                
+            subDirectoriesProcessTasks.Add(ProcessDirectoryAsync(subDir, subDirEntry, cancellationToken));
         }
+        return subDirectoriesProcessTasks;
     }
 
-    private Task CreateSubtask(
-        DirectoryInfo subDir,
-        FileEntry dirEntry,
-        CancellationToken cancellationToken,
-        TaskCreationOptions options)
+    private void OnStartProcessingDirectory(FileEntry dirEntry)
     {
-        if (options == TaskCreationOptions.None)
-            return ScanDirectoryInternalAsync(subDir, dirEntry, cancellationToken, options);
+        StartProcessingDirectory?.Invoke(this, new StartProcessingDirectoryEventArgs(dirEntry));
+    }
 
-        return Task.Factory.StartNew(
-            () => ScanDirectoryInternalAsync(subDir, dirEntry, cancellationToken, options),
-            cancellationToken,
-            options,
-            TaskScheduler.Default).Unwrap();
+    private void OnDirectoryProcessed(FileEntry dirEntry)
+    {
+        DirectoryProcessed?.Invoke(this, new DirectoryProcessedEventArgs(dirEntry));
     }
 
     private void OnFileProcessed(FileEntry fileEntry)

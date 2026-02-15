@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
-namespace Directory_Scanner.Core.Model;
+namespace Directory_Scanner.UI.Model;
 
 public class ViewModelBase : INotifyPropertyChanged
 {

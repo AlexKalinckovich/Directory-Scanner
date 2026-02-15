@@ -1,15 +1,19 @@
 
 namespace Directory_Scanner.Core.FileModels;
 
-public class FileEntry
+public sealed class FileEntry
 {
+    
     public FileType FileType { get; }
     public string FileName { get; }
     public string FullPath { get; }
-    public long FileSize { get; private set; }
+    public long FileSize { get; set; }
     
     public FileState State { get; set; }
-    public List<FileEntry> Children { get; }
+    
+    private List<FileEntry>? _subDirectories;
+
+    public IReadOnlyList<FileEntry> SubDirectories => _subDirectories ??= new List<FileEntry>();
     
     public FileEntry(FileType fileType, string fileName, string fullPath, long fileSize = 0)
     {
@@ -17,17 +21,21 @@ public class FileEntry
         FileName = fileName;
         FullPath = fullPath;
         FileSize = fileSize;
-        Children = new List<FileEntry>();
     }
     
-    public void AddChild(FileEntry child)
+    public void UpdateFileSize(FileEntry child)
     {
-        Children.Add(child);
         
         if (child.FileType == FileType.File)
         {
             FileSize += child.FileSize;
         }
+    }
+
+    public void AddSubDirectoryChild(FileEntry child)
+    {
+        _subDirectories ??= new List<FileEntry>();
+        _subDirectories.Add(child);
     }
 
     public override string ToString()

@@ -1,6 +1,6 @@
 using Directory_Scanner.Core.FileModels;
 
-namespace Directory_Scanner.Core.Event;
+namespace Directory_Scanner.Core.ScannerEventArgs;
 
 public class FileProcessedEventArgs : EventArgs
 {
