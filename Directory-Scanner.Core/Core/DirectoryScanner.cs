@@ -22,7 +22,9 @@ public sealed class DirectoryScanner
     public async Task<FileEntry> ScanDirectoryAsync(string rootPath, CancellationToken cancellationToken = default)
     {
         AssertPathNotNullOrEmpty(rootPath);
+        
         DirectoryInfo rootDir = new DirectoryInfo(rootPath);
+        
         AssertRootDirectoryExists(rootPath, rootDir);
 
         FileEntry rootEntry = new FileEntry(FileType.Directory, rootDir.Name, rootDir.FullName);
@@ -53,6 +55,7 @@ public sealed class DirectoryScanner
     private async Task ProcessDirectoryAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
         OnStartProcessingDirectory(dirEntry);
+        long time = DateTimeOffset.Now.ToUnixTimeMilliseconds();
         await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         List<Task> subDirTasks;
@@ -60,12 +63,17 @@ public sealed class DirectoryScanner
         {
             cancellationToken.ThrowIfCancellationRequested();
             
-            TryProcessFiles(dirInfo, dirEntry, cancellationToken);
-            
             subDirTasks = TryEnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
+            
+            subDirTasks.Add(Task.Run(() => TryProcessFiles(dirInfo, dirEntry, cancellationToken), cancellationToken));
         }
         finally
         {
+            long timeRelease = DateTimeOffset.Now.ToUnixTimeMilliseconds() - time;
+            if (Math.Abs(timeRelease) > 100)
+            {
+                Console.WriteLine($"Processing directory {dirInfo.FullName} is too long to be processed: {timeRelease}");
+            }
             _semaphore.Release();
         }
 
@@ -73,7 +81,7 @@ public sealed class DirectoryScanner
         
         UpdateTotalDirectorySize(dirEntry);
         
-        //OnDirectoryProcessed(dirEntry);
+        OnDirectoryProcessed(dirEntry);
     }
 
     private static void UpdateTotalDirectorySize(FileEntry dirEntry)
@@ -98,18 +106,21 @@ public sealed class DirectoryScanner
 
     private void ProcessFiles(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
+        long totalFileSize = 0;
         foreach (FileInfo file in dirInfo.EnumerateFiles())
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var fileEntry = new FileEntry(FileType.File, file.Name, file.FullName, file.Length)
+            FileEntry fileEntry = new FileEntry(FileType.File, file.Name, file.FullName, file.Length)
             {
                 State = FileState.Ok
             };
 
             OnFileProcessed(fileEntry);
-            dirEntry.UpdateFileSize(fileEntry);
+            
+            totalFileSize += file.Length;
         }
+        dirEntry.FileSize += totalFileSize;
     }
 
     private List<Task> TryEnqueueSubdirectories(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
@@ -134,11 +145,15 @@ public sealed class DirectoryScanner
         foreach (DirectoryInfo subDir in dirInfo.EnumerateDirectories())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            FileEntry subDirEntry = new FileEntry(FileType.Directory, subDir.Name, subDir.FullName);
+            
+            FileEntry subDirEntry = new FileEntry(FileType.Directory, subDir.Name, subDir.FullName)
+            {
+                State = FileState.Ok
+            };
                 
             dirEntry.AddSubDirectoryChild(subDirEntry);
                 
-            subDirectoriesProcessTasks.Add(ProcessDirectoryAsync(subDir, subDirEntry, cancellationToken));
+            subDirectoriesProcessTasks.Add(Task.Run(() => ProcessDirectoryAsync(subDir, subDirEntry, cancellationToken), cancellationToken));
         }
         return subDirectoriesProcessTasks;
     }

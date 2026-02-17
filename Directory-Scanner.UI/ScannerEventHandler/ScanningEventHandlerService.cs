@@ -1,5 +1,3 @@
-// ScannerEventHandlingService.cs
-
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.IO;
@@ -58,6 +56,7 @@ public sealed class ScannerEventHandlingService
         if (_viewModelCache.TryGetValue(e.DirectoryEntry.FullPath, out FileEntryViewModel? viewModel))
         {
             HandleDirectoryProcessedCore(viewModel, e);
+            _viewModelCache.TryRemove(e.DirectoryEntry.FullPath, out _);
         }
     }
 
