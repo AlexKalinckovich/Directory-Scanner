@@ -1,9 +1,9 @@
 using System.Collections.ObjectModel;
-using System.IO;
 using System.Windows.Input;
 using Directory_Scanner.Core.Core;
 using Directory_Scanner.UI.Command;
 using Directory_Scanner.UI.Context;
+using Directory_Scanner.UI.FileHelper;
 using Directory_Scanner.UI.ScannerEventHandler;
 
 namespace Directory_Scanner.UI.Model
@@ -20,10 +20,10 @@ namespace Directory_Scanner.UI.Model
             set => SetProperty(ref _selectedPath, value);
         }
 
-        public bool IsScanning
+        private bool IsScanning
         {
             get => _isScanning;
-            private set => SetProperty(ref _isScanning, value);
+            set => SetProperty(ref _isScanning, value);
         }
 
         public long TotalSize
@@ -43,7 +43,6 @@ namespace Directory_Scanner.UI.Model
         private long _totalSize;
         
         private CancellationTokenSource? _cts;
-
         public MainWindowViewModel()
         {
             _scanner = new DirectoryScanner();
@@ -51,8 +50,8 @@ namespace Directory_Scanner.UI.Model
 
             ScannerEventContext context = new ScannerEventContext(
                 RootItems,
-                () => SelectedPath,
-                (long size) => TotalSize = size);
+                selectedPathGetter: () => SelectedPath,
+                totalSizeSetter: (long size) => TotalSize = size);
 
             _eventHandlingService = new ScannerEventHandlingService(context);
 
@@ -62,14 +61,17 @@ namespace Directory_Scanner.UI.Model
 
         private bool CanExecuteStartScan(object? parameter)
         {
-            return !IsScanning && Directory.Exists(SelectedPath);
+            return !IsScanning;
         }
 
         private void ExecuteStartScan(object? parameter)
         {
-            if (CanExecuteStartScan(parameter))
+            string? pathName = FileUtils.PickFolder();
+            if (pathName != null && CanExecuteStartScan(parameter))
             {
                 IsScanning = true;
+                
+                _selectedPath = pathName;
                 
                 ClearState();
                 

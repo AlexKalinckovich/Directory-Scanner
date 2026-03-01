@@ -30,20 +30,21 @@ public sealed class ScannerEventHandlingService
 
     public void HandleStartProcessingDirectory(object? sender, StartProcessingDirectoryEventArgs e)
     {
-        FileEntryViewModel viewModel = CreateAndCacheViewModel(e.DirectoryEntry);
+        FileEntry directoryEntry = e.DirectoryEntry;
+        FileEntryViewModel viewModel = CreateAndCacheViewModel(directoryEntry);
         
-        string? parentPath = GetParentPath(e.DirectoryEntry.FullPath);
+        string? parentPath = directoryEntry.ParentPath;
         
         AddDirectoryToTree(viewModel, parentPath);
         
-        ProcessPendingChildren(viewModel, e.DirectoryEntry.FullPath);
+        ProcessPendingChildren(viewModel, directoryEntry.FullPath);
     }
 
     public void HandleFileProcessed(object? sender, FileProcessedEventArgs e)
     {
         FileEntryViewModel viewModel = CreateAndCacheViewModel(e.FileEntry);
         
-        string? parentPath = GetParentPath(e.FileEntry.FullPath);
+        string? parentPath = e.FileEntry.ParentPath;
         
         if (parentPath != null)
         {
@@ -153,9 +154,5 @@ public sealed class ScannerEventHandlingService
             rootItems[0].IsExpanded = true;
         }
     }
-
-    private static string? GetParentPath(string fullPath)
-    {
-        return Directory.GetParent(fullPath)?.FullName;
-    }
+    
 }

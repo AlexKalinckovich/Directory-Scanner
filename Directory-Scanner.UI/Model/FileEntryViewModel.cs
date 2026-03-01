@@ -16,6 +16,8 @@ public class FileEntryViewModel : ViewModelBase
 
     public string Name => _model.FileName;
     public long Size => _model.FileSize;
+    
+    public FileType Type => _model.FileType;
     public ObservableCollection<FileEntryViewModel> Children { get; }
 
     public bool IsExpanded

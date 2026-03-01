@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Directory_Scanner.Core.FileModels;
 using Directory_Scanner.Core.ScannerEventArgs;
 
@@ -27,7 +28,7 @@ public sealed class DirectoryScanner
         
         AssertRootDirectoryExists(rootPath, rootDir);
 
-        FileEntry rootEntry = new FileEntry(FileType.Directory, rootDir.Name, rootDir.FullName);
+        FileEntry rootEntry = new FileEntry(rootDir);
         
         await ProcessDirectoryAsync(rootDir, rootEntry, cancellationToken).ConfigureAwait(false);
         
@@ -55,72 +56,68 @@ public sealed class DirectoryScanner
     private async Task ProcessDirectoryAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
         OnStartProcessingDirectory(dirEntry);
-        long time = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-        await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-
+        Task<long> totalFileSize;
         List<Task> subDirTasks;
+        await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
             
             subDirTasks = TryEnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
+
+            totalFileSize = Task.Run(() => TryProcessFiles(dirInfo, dirEntry, cancellationToken), cancellationToken);
             
-            subDirTasks.Add(Task.Run(() => TryProcessFiles(dirInfo, dirEntry, cancellationToken), cancellationToken));
+            subDirTasks.Add(totalFileSize);
         }
         finally
         {
-            long timeRelease = DateTimeOffset.Now.ToUnixTimeMilliseconds() - time;
-            if (Math.Abs(timeRelease) > 100)
-            {
-                Console.WriteLine($"Processing directory {dirInfo.FullName} is too long to be processed: {timeRelease}");
-            }
             _semaphore.Release();
         }
 
         await Task.WhenAll(subDirTasks).ConfigureAwait(false);
         
-        UpdateTotalDirectorySize(dirEntry);
+        long localFileTotal = totalFileSize.Result;
+
+        long subDirTotal = dirEntry.SubDirectories.Sum((FileEntry sd) => sd.FileSize);
+        
+        dirEntry.FileSize = localFileTotal + subDirTotal;
+        
+        dirEntry.Dispose();
         
         OnDirectoryProcessed(dirEntry);
     }
 
-    private static void UpdateTotalDirectorySize(FileEntry dirEntry)
+    private long TryProcessFiles(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
-        foreach (FileEntry child in dirEntry.SubDirectories)
-        {
-            dirEntry.FileSize += child.FileSize;
-        }
-    }
-
-    private void TryProcessFiles(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
-    {
+        long totalFileSize;
         try
         {
-            ProcessFiles(dirInfo, dirEntry, cancellationToken);
+            totalFileSize = ProcessFiles(dirInfo, cancellationToken);
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException e)
         {
-            dirEntry.State = FileState.AccessDenied;
+            Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
+            dirEntry.FileState = FileState.AccessDenied;
+            totalFileSize = 0;
         }
+        
+        return totalFileSize;
     }
 
-    private void ProcessFiles(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
+    private long ProcessFiles(DirectoryInfo dirInfo, CancellationToken cancellationToken)
     {
         long totalFileSize = 0;
-        foreach (FileInfo file in dirInfo.EnumerateFiles())
+        foreach (FileInfo fileInfo in dirInfo.EnumerateFiles())
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            FileEntry fileEntry = new FileEntry(FileType.File, file.Name, file.FullName, file.Length)
-            {
-                State = FileState.Ok
-            };
+            FileEntry fileEntry = new FileEntry(fileInfo);
 
             OnFileProcessed(fileEntry);
             
-            totalFileSize += file.Length;
+            totalFileSize += fileInfo.Length;
         }
-        dirEntry.FileSize += totalFileSize;
+        return totalFileSize;
     }
 
     private List<Task> TryEnqueueSubdirectories(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
@@ -130,9 +127,10 @@ public sealed class DirectoryScanner
         {
             subDirectoriesProcessTasks = EnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException e)
         {
-            dirEntry.State = FileState.AccessDenied;
+            Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
+            dirEntry.FileState = FileState.AccessDenied;
             subDirectoriesProcessTasks = [];
         }
 
@@ -145,15 +143,14 @@ public sealed class DirectoryScanner
         foreach (DirectoryInfo subDir in dirInfo.EnumerateDirectories())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            
-            FileEntry subDirEntry = new FileEntry(FileType.Directory, subDir.Name, subDir.FullName)
-            {
-                State = FileState.Ok
-            };
+
+            FileEntry subDirEntry = new FileEntry(subDir);
                 
             dirEntry.AddSubDirectoryChild(subDirEntry);
                 
-            subDirectoriesProcessTasks.Add(Task.Run(() => ProcessDirectoryAsync(subDir, subDirEntry, cancellationToken), cancellationToken));
+            subDirectoriesProcessTasks.Add(Task.Run(
+                () => ProcessDirectoryAsync(subDir, subDirEntry, cancellationToken), cancellationToken)
+            );
         }
         return subDirectoriesProcessTasks;
     }

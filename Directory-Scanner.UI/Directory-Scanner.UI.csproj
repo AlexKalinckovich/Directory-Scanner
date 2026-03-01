@@ -13,4 +13,18 @@
       <ProjectReference Include="..\Directory-Scanner.Core\Directory-Scanner.Core.csproj" />
     </ItemGroup>
 
+    <ItemGroup>
+      <None Remove="Image\icons8-document-48.png" />
+      <None Remove="Image\icons8-folder-48.png" />
+      <Resource Include="Image\folder.png" />
+      <None Remove="Image\file.png" />
+      <None Remove="Image\file (1).png" />
+      <Resource Include="Image\file.png" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Microsoft-WindowsAPICodePack-Core" Version="1.1.5" />
+      <PackageReference Include="Microsoft-WindowsAPICodePack-Shell" Version="1.1.5" />
+    </ItemGroup>
+
 </Project>

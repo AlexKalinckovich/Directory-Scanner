@@ -6,41 +6,45 @@ public sealed class FileEntry
     
     public FileType FileType { get; }
     public string FileName { get; }
+    
+    public string? ParentPath { get; }
     public string FullPath { get; }
     public long FileSize { get; set; }
     
-    public FileState State { get; set; }
+    public FileState FileState { get; set; }
     
     private List<FileEntry>? _subDirectories;
 
     public IReadOnlyList<FileEntry> SubDirectories => _subDirectories ??= new List<FileEntry>();
-    
-    public FileEntry(FileType fileType, string fileName, string fullPath, long fileSize = 0)
+
+    public FileEntry(DirectoryInfo directoryInfo)
     {
-        FileType = fileType;
-        FileName = fileName;
-        FullPath = fullPath;
-        FileSize = fileSize;
+        FullPath = directoryInfo.FullName;
+        FileName = directoryInfo.Name;
+        ParentPath = directoryInfo.Parent?.FullName;
+        FileSize = 0;
+        FileType = FileType.Directory;
+        FileState = FileState.Ok;
+    }
+
+    public FileEntry(FileInfo fileInfo)
+    {
+        FullPath = fileInfo.FullName;
+        FileName = fileInfo.Name;
+        ParentPath = fileInfo.DirectoryName;
+        FileSize = fileInfo.Length;
+        FileType = FileType.File;
+        FileState = FileState.Ok;
     }
     
-    public void UpdateFileSize(FileEntry child)
+    public void Dispose()
     {
-        
-        if (child.FileType == FileType.File)
-        {
-            FileSize += child.FileSize;
-        }
+        _subDirectories?.Clear();
     }
 
     public void AddSubDirectoryChild(FileEntry child)
     {
         _subDirectories ??= new List<FileEntry>();
         _subDirectories.Add(child);
-    }
-
-    public override string ToString()
-    {
-        return $"\n ============== \n FileType: {FileType} FileName: {FileName} \n FileSize:{FileSize} \n State:{State} \n FilePath:{FullPath} \n" +
-               $"\n =============== \n";
     }
 }
