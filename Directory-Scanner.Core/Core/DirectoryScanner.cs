@@ -63,9 +63,9 @@ public sealed class DirectoryScanner
         {
             cancellationToken.ThrowIfCancellationRequested();
             
+            totalFileSize = FileCalculationInSeparateThread(dirInfo, dirEntry, cancellationToken);
+            
             subDirTasks = TryEnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
-
-            totalFileSize = Task.Run(() => TryProcessFiles(dirInfo, dirEntry, cancellationToken), cancellationToken);
             
             subDirTasks.Add(totalFileSize);
         }
@@ -82,9 +82,22 @@ public sealed class DirectoryScanner
         
         dirEntry.FileSize = localFileTotal + subDirTotal;
         
-        dirEntry.Dispose();
-        
         OnDirectoryProcessed(dirEntry);
+    }
+
+    private Task<long> FileCalculationInSeparateThread(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
+    {
+        Task<long> result;
+        try
+        {
+            _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            result = Task.Run(() => TryProcessFiles(dirInfo, dirEntry, cancellationToken), cancellationToken);
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+        return result;
     }
 
     private long TryProcessFiles(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
@@ -94,10 +107,26 @@ public sealed class DirectoryScanner
         {
             totalFileSize = ProcessFiles(dirInfo, cancellationToken);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (UnauthorizedAccessException e)
         {
             Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
             dirEntry.FileState = FileState.AccessDenied;
+            totalFileSize = 0;
+        }
+        catch (IOException e)
+        {
+            Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
+            dirEntry.FileState = FileState.IoError;
+            totalFileSize = 0;
+        }
+        catch (Exception e)
+        {
+            Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
+            dirEntry.FileState = FileState.UnknownError;
             totalFileSize = 0;
         }
         
@@ -127,10 +156,26 @@ public sealed class DirectoryScanner
         {
             subDirectoriesProcessTasks = EnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (UnauthorizedAccessException e)
         {
             Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
             dirEntry.FileState = FileState.AccessDenied;
+            subDirectoriesProcessTasks = [];
+        }
+        catch (IOException e)
+        {
+            Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
+            dirEntry.FileState = FileState.IoError;
+            subDirectoriesProcessTasks = [];
+        }
+        catch (Exception e)
+        {
+            Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
+            dirEntry.FileState = FileState.UnknownError;
             subDirectoriesProcessTasks = [];
         }
 
@@ -148,11 +193,25 @@ public sealed class DirectoryScanner
                 
             dirEntry.AddSubDirectoryChild(subDirEntry);
                 
+            AddStartedProcessDirectoryInSeparateThread(cancellationToken, subDirectoriesProcessTasks, subDir, subDirEntry);
+        }
+        return subDirectoriesProcessTasks;
+    }
+
+    private void AddStartedProcessDirectoryInSeparateThread(CancellationToken cancellationToken,
+        List<Task> subDirectoriesProcessTasks, DirectoryInfo subDir, FileEntry subDirEntry)
+    {
+        try
+        {
+            _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
             subDirectoriesProcessTasks.Add(Task.Run(
                 () => ProcessDirectoryAsync(subDir, subDirEntry, cancellationToken), cancellationToken)
             );
         }
-        return subDirectoriesProcessTasks;
+        finally
+        {
+            _semaphore.Release();   
+        }
     }
 
     private void OnStartProcessingDirectory(FileEntry dirEntry)

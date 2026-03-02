@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Windows.Input;
 using Directory_Scanner.Core.Core;
 using Directory_Scanner.UI.Command;
@@ -14,6 +15,7 @@ namespace Directory_Scanner.UI.Model
         public ICommand StartScanCommand { get; }
         public ICommand CancelScanCommand { get; }
 
+        private Stopwatch _stopwatch;
         public string SelectedPath
         {
             get => _selectedPath;
@@ -67,6 +69,7 @@ namespace Directory_Scanner.UI.Model
         private void ExecuteStartScan(object? parameter)
         {
             string? pathName = FileUtils.PickFolder();
+            _stopwatch = Stopwatch.StartNew();
             if (pathName != null && CanExecuteStartScan(parameter))
             {
                 IsScanning = true;
@@ -129,6 +132,7 @@ namespace Directory_Scanner.UI.Model
             _cts?.Dispose();
             
             _cts = null;
+            Console.WriteLine(_stopwatch.Elapsed);
         }
     }
 }
