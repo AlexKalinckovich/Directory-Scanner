@@ -18,6 +18,8 @@ public class FileEntryViewModel : ViewModelBase
     public long Size => _model.FileSize;
     
     public FileType Type => _model.FileType;
+    public string? ParentPath => _model.ParentPath;
+
     public ObservableCollection<FileEntryViewModel> Children { get; }
 
     public bool IsExpanded
@@ -25,6 +27,7 @@ public class FileEntryViewModel : ViewModelBase
         get => _isExpanded;
         set => SetProperty(ref _isExpanded, value);
     }
+
 
     public void RaiseSizeChanged() => OnPropertyChanged(nameof(Size));
 }

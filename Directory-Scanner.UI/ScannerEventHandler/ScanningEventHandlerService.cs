@@ -1,6 +1,7 @@
+using System;
 using System.Collections.Concurrent;
-using System.Collections.ObjectModel;
-using System.IO;
+using System.Collections.Generic;
+using System.Threading;
 using System.Windows;
 using Directory_Scanner.Core.FileModels;
 using Directory_Scanner.Core.ScannerEventArgs;
@@ -9,46 +10,55 @@ using Directory_Scanner.UI.Model;
 
 namespace Directory_Scanner.UI.ScannerEventHandler;
 
-public sealed class ScannerEventHandlingService
+public sealed class ScannerEventHandlingService : IDisposable
 {
     private readonly ScannerEventContext _context;
     private readonly ConcurrentDictionary<string, FileEntryViewModel> _viewModelCache;
-    private readonly ConcurrentDictionary<string, List<FileEntryViewModel>> _pendingChildren;
+    private readonly List<FileEntryViewModel> _pendingFileChildren;
+    private readonly object _batchLock;
+    private readonly Timer _flushTimer;
+    private bool _disposed;
 
     public ScannerEventHandlingService(ScannerEventContext context)
     {
         _context = context;
         _viewModelCache = new ConcurrentDictionary<string, FileEntryViewModel>();
-        _pendingChildren = new ConcurrentDictionary<string, List<FileEntryViewModel>>();
+        _pendingFileChildren = new List<FileEntryViewModel>();
+        _batchLock = new object();
+        _flushTimer = new Timer(FlushPendingFiles, null, 0, 100);
     }
 
     public void Clear()
     {
+        FlushPendingFiles(synchronous: true);
         _viewModelCache.Clear();
-        _pendingChildren.Clear();
     }
 
     public void HandleStartProcessingDirectory(object? sender, StartProcessingDirectoryEventArgs e)
     {
         FileEntry directoryEntry = e.DirectoryEntry;
         FileEntryViewModel viewModel = CreateAndCacheViewModel(directoryEntry);
-        
         string? parentPath = directoryEntry.ParentPath;
-        
-        AddDirectoryToTree(viewModel, parentPath);
-        
-        ProcessPendingChildren(viewModel, directoryEntry.FullPath);
+
+        if (_context.RootItems.Count == 0)
+        {
+            Application.Current.Dispatcher.Invoke(() => _context.RootItems.Add(viewModel));
+        }
+        else if (parentPath != null)
+        {
+            if (_viewModelCache.TryGetValue(parentPath, out FileEntryViewModel? parent))
+            {
+                Application.Current.Dispatcher.Invoke(() => parent.Children.Add(viewModel));
+            }
+        }
     }
 
     public void HandleFileProcessed(object? sender, FileProcessedEventArgs e)
     {
-        FileEntryViewModel viewModel = CreateAndCacheViewModel(e.FileEntry);
-        
-        string? parentPath = e.FileEntry.ParentPath;
-        
-        if (parentPath != null)
+        FileEntryViewModel viewModel = new FileEntryViewModel(e.FileEntry);
+        lock (_batchLock)
         {
-            TryAddChild(parentPath, viewModel);
+            _pendingFileChildren.Add(viewModel);
         }
     }
 
@@ -56,23 +66,18 @@ public sealed class ScannerEventHandlingService
     {
         if (_viewModelCache.TryGetValue(e.DirectoryEntry.FullPath, out FileEntryViewModel? viewModel))
         {
-            HandleDirectoryProcessedCore(viewModel, e);
-            _viewModelCache.TryRemove(e.DirectoryEntry.FullPath, out _);
+            Application.Current.Dispatcher.BeginInvoke(viewModel.RaiseSizeChanged);
+            
+            if (e.DirectoryEntry.FullPath == _context.SelectedPathGetter())
+            {
+                Application.Current.Dispatcher.BeginInvoke(() => _context.TotalSizeSetter(e.DirectoryEntry.FileSize));
+            }
         }
     }
 
     public void HandleProcessingCompleted(object? sender, ProcessingCompletedEventArgs e)
     {
-        Application.Current.Dispatcher.Invoke(ExpandRootIfExists);
-    }
-
-    private void HandleDirectoryProcessedCore(FileEntryViewModel viewModel, DirectoryProcessedEventArgs e)
-    {
-        Application.Current.Dispatcher.Invoke(viewModel.RaiseSizeChanged);
-        if (e.DirectoryEntry.FullPath == _context.SelectedPathGetter())
-        {
-            Application.Current.Dispatcher.Invoke(() => _context.TotalSizeSetter(e.DirectoryEntry.FileSize));
-        }
+        //Application.Current.Dispatcher.BeginInvoke(ExpandRootIfExists);
     }
 
     private FileEntryViewModel CreateAndCacheViewModel(FileEntry entry)
@@ -84,75 +89,81 @@ public sealed class ScannerEventHandlingService
         return viewModel;
     }
 
-    private void AddDirectoryToTree(FileEntryViewModel viewModel, string? parentPath)
+    private void FlushPendingFiles(object? state)
     {
-        if (_context.RootItems.Count == 0)
+        FlushPendingFiles(synchronous: false);
+    }
+
+    private void FlushPendingFiles(bool synchronous)
+    {
+        List<FileEntryViewModel> toAdd;
+        lock (_batchLock)
         {
-            AddRootItem(viewModel);
+            if (_pendingFileChildren.Count == 0)
+                return;
+            toAdd = new List<FileEntryViewModel>(_pendingFileChildren);
+            _pendingFileChildren.Clear();
+        }
+
+        
+        Dictionary<string, List<FileEntryViewModel>> grouped = GroupFilesByDir(toAdd);
+
+        UpdateUi(synchronous, grouped);
+    }
+
+    private static Dictionary<string, List<FileEntryViewModel>> GroupFilesByDir(List<FileEntryViewModel> toAdd)
+    {
+        Dictionary<string, List<FileEntryViewModel>> grouped = new Dictionary<string, List<FileEntryViewModel>>();
+        foreach (FileEntryViewModel vm in toAdd)
+        {
+            string? parentPath = vm.ParentPath;
+            if (parentPath != null)
+            {
+                if (!grouped.TryGetValue(parentPath, out List<FileEntryViewModel>? list))
+                {
+                    list = new List<FileEntryViewModel>();
+                    grouped[parentPath] = list;
+                }
+
+                list.Add(vm);
+            }
+        }
+
+        return grouped;
+    }
+
+    private void UpdateUi(bool synchronous, Dictionary<string, List<FileEntryViewModel>> grouped)
+    {
+        if (synchronous)
+        {
+            Application.Current.Dispatcher.Invoke(() => AddGroupedChildren(grouped));
         }
         else
         {
-            if (parentPath != null)
+            Application.Current.Dispatcher.BeginInvoke(new Action(() => AddGroupedChildren(grouped)));
+        }
+    }
+
+    private void AddGroupedChildren(Dictionary<string, List<FileEntryViewModel>> grouped)
+    {
+        foreach (KeyValuePair<string, List<FileEntryViewModel>> pair in grouped)
+        {
+            if (_viewModelCache.TryGetValue(pair.Key, out FileEntryViewModel? parent))
             {
-                TryAddChild(parentPath, viewModel);
+                foreach (FileEntryViewModel child in pair.Value)
+                {
+                    parent.Children.Add(child);
+                }
             }
         }
     }
 
-    private void AddRootItem(FileEntryViewModel viewModel)
+    public void Dispose()
     {
-        Application.Current.Dispatcher.Invoke(() => _context.RootItems.Add(viewModel));
-    }
-
-    private void TryAddChild(string parentPath, FileEntryViewModel child)
-    {
-        if (_viewModelCache.TryGetValue(parentPath, out FileEntryViewModel? parent))
+        if (!_disposed)
         {
-            Application.Current.Dispatcher.Invoke(() => parent.Children.Add(child));
-        }
-        else
-        {
-            AddOrUpdateEntry(parentPath, child);
+            _flushTimer.Dispose();
+            _disposed = true;
         }
     }
-
-    private void AddOrUpdateEntry(string parentPath, FileEntryViewModel child)
-    {
-        List<FileEntryViewModel> AddNewDirectoryEntryValueFactory(string _) => [child];
-
-        List<FileEntryViewModel> UpdateExistedDirectoryValueFactory(string _, List<FileEntryViewModel> existingList)
-        {
-            existingList.Add(child);
-
-            return existingList;
-        }
-
-        _pendingChildren.AddOrUpdate(parentPath, AddNewDirectoryEntryValueFactory, UpdateExistedDirectoryValueFactory);
-    }
-
-    private void ProcessPendingChildren(FileEntryViewModel viewModel, string directoryPath)
-    {
-        if (_pendingChildren.TryRemove(directoryPath, out List<FileEntryViewModel>? children))
-        {
-            AddChildrenToViewModel(viewModel, children);
-        }
-    }
-
-    private static void AddChildrenToViewModel(FileEntryViewModel viewModel, List<FileEntryViewModel> children)
-    {
-        foreach (FileEntryViewModel child in children)
-        {
-            Application.Current.Dispatcher.Invoke(() => viewModel.Children.Add(child));
-        }
-    }
-
-    private void ExpandRootIfExists()
-    {
-        ObservableCollection<FileEntryViewModel> rootItems = _context.RootItems;
-        if (rootItems.Count > 0)
-        {
-            rootItems[0].IsExpanded = true;
-        }
-    }
-    
 }

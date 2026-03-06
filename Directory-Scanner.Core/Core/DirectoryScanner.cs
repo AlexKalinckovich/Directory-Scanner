@@ -56,23 +56,14 @@ public sealed class DirectoryScanner
     private async Task ProcessDirectoryAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
         OnStartProcessingDirectory(dirEntry);
-        Task<long> totalFileSize;
-        List<Task> subDirTasks;
-        await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            cancellationToken.ThrowIfCancellationRequested();
+        
+        cancellationToken.ThrowIfCancellationRequested();
             
-            totalFileSize = FileCalculationInSeparateThread(dirInfo, dirEntry, cancellationToken);
+        Task<long> totalFileSize = FileCalculationInSeparateThread(dirInfo, dirEntry, cancellationToken);
             
-            subDirTasks = TryEnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
+        List<Task> subDirTasks = TryEnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
             
-            subDirTasks.Add(totalFileSize);
-        }
-        finally
-        {
-            _semaphore.Release();
-        }
+        subDirTasks.Add(totalFileSize);
 
         await Task.WhenAll(subDirTasks).ConfigureAwait(false);
         
@@ -151,7 +142,7 @@ public sealed class DirectoryScanner
 
     private List<Task> TryEnqueueSubdirectories(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
-        List<Task> subDirectoriesProcessTasks;
+        List<Task> subDirectoriesProcessTasks = [];
         try
         {
             subDirectoriesProcessTasks = EnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
@@ -164,19 +155,16 @@ public sealed class DirectoryScanner
         {
             Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
             dirEntry.FileState = FileState.AccessDenied;
-            subDirectoriesProcessTasks = [];
         }
         catch (IOException e)
         {
             Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
             dirEntry.FileState = FileState.IoError;
-            subDirectoriesProcessTasks = [];
         }
         catch (Exception e)
         {
             Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
             dirEntry.FileState = FileState.UnknownError;
-            subDirectoriesProcessTasks = [];
         }
 
         return subDirectoriesProcessTasks;

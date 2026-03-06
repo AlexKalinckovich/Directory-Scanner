@@ -16,7 +16,7 @@ public sealed class FileEntry
     {
         FullPath = directoryInfo.FullName;
         FileName = directoryInfo.Name;
-        ParentPath = directoryInfo.Parent?.FullName;
+        ParentPath = string.Intern(directoryInfo.Parent?.FullName ?? string.Empty);
         FileSize = 0;
         FileType = FileType.Directory;
         FileState = FileState.Ok;
@@ -26,7 +26,7 @@ public sealed class FileEntry
     {
         FullPath = fileInfo.FullName;
         FileName = fileInfo.Name;
-        ParentPath = fileInfo.DirectoryName;
+        ParentPath = string.Intern(fileInfo.DirectoryName ?? string.Empty);
         FileSize = fileInfo.Length;
         FileType = FileType.File;
         FileState = FileState.Ok;
