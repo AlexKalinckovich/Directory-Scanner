@@ -7,6 +7,7 @@ public class FileEntryViewModel : ViewModelBase
 {
     private readonly FileEntry _model;
     private bool _isExpanded;
+    private double _percent;
 
     public FileEntryViewModel(FileEntry model)
     {
@@ -16,10 +17,8 @@ public class FileEntryViewModel : ViewModelBase
 
     public string Name => _model.FileName;
     public long Size => _model.FileSize;
-    
     public FileType Type => _model.FileType;
     public string? ParentPath => _model.ParentPath;
-
     public ObservableCollection<FileEntryViewModel> Children { get; }
 
     public bool IsExpanded
@@ -28,6 +27,11 @@ public class FileEntryViewModel : ViewModelBase
         set => SetProperty(ref _isExpanded, value);
     }
 
+    public double Percent
+    {
+        get => _percent;
+        set => SetProperty(ref _percent, value);
+    }
 
     public void RaiseSizeChanged() => OnPropertyChanged(nameof(Size));
 }

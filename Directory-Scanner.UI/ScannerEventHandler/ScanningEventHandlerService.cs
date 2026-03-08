@@ -1,7 +1,4 @@
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Threading;
 using System.Windows;
 using Directory_Scanner.Core.FileModels;
 using Directory_Scanner.Core.ScannerEventArgs;
@@ -42,13 +39,13 @@ public sealed class ScannerEventHandlingService : IDisposable
 
         if (_context.RootItems.Count == 0)
         {
-            Application.Current.Dispatcher.Invoke(() => _context.RootItems.Add(viewModel));
+            Application.Current.Dispatcher.BeginInvoke(() => _context.RootItems.Add(viewModel));
         }
         else if (parentPath != null)
         {
             if (_viewModelCache.TryGetValue(parentPath, out FileEntryViewModel? parent))
             {
-                Application.Current.Dispatcher.Invoke(() => parent.Children.Add(viewModel));
+                Application.Current.Dispatcher.BeginInvoke(() => parent.Children.Add(viewModel));
             }
         }
     }
@@ -56,6 +53,8 @@ public sealed class ScannerEventHandlingService : IDisposable
     public void HandleFileProcessed(object? sender, FileProcessedEventArgs e)
     {
         FileEntryViewModel viewModel = new FileEntryViewModel(e.FileEntry);
+        _viewModelCache.TryAdd(e.FileEntry.FullPath, viewModel);
+        
         lock (_batchLock)
         {
             _pendingFileChildren.Add(viewModel);
@@ -77,15 +76,13 @@ public sealed class ScannerEventHandlingService : IDisposable
 
     public void HandleProcessingCompleted(object? sender, ProcessingCompletedEventArgs e)
     {
-        //Application.Current.Dispatcher.BeginInvoke(ExpandRootIfExists);
+        FlushPendingFiles(synchronous: true);
     }
 
     private FileEntryViewModel CreateAndCacheViewModel(FileEntry entry)
     {
         FileEntryViewModel viewModel = new FileEntryViewModel(entry);
-        
         _viewModelCache.TryAdd(entry.FullPath, viewModel);
-        
         return viewModel;
     }
 
@@ -105,9 +102,7 @@ public sealed class ScannerEventHandlingService : IDisposable
             _pendingFileChildren.Clear();
         }
 
-        
         Dictionary<string, List<FileEntryViewModel>> grouped = GroupFilesByDir(toAdd);
-
         UpdateUi(synchronous, grouped);
     }
 
@@ -124,11 +119,9 @@ public sealed class ScannerEventHandlingService : IDisposable
                     list = new List<FileEntryViewModel>();
                     grouped[parentPath] = list;
                 }
-
                 list.Add(vm);
             }
         }
-
         return grouped;
     }
 

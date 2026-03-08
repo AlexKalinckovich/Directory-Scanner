@@ -30,7 +30,7 @@ public sealed class DirectoryScanner
 
         FileEntry rootEntry = new FileEntry(rootDir);
         
-        await ProcessDirectoryAsync(rootDir, rootEntry, cancellationToken).ConfigureAwait(false);
+        await ProcessDirectoryAsync(rootDir, rootEntry, cancellationToken);
         
         OnProcessingCompleted(rootEntry);
         
@@ -59,36 +59,31 @@ public sealed class DirectoryScanner
         
         cancellationToken.ThrowIfCancellationRequested();
             
-        Task<long> totalFileSize = FileCalculationInSeparateThread(dirInfo, dirEntry, cancellationToken);
+        long totalFileSize = await FileCalculationInSeparateThread(dirInfo, dirEntry, cancellationToken);
             
-        List<Task> subDirTasks = TryEnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
-            
-        subDirTasks.Add(totalFileSize);
-
+        List<Task> subDirTasks = await TryEnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
+        
         await Task.WhenAll(subDirTasks).ConfigureAwait(false);
         
-        long localFileTotal = totalFileSize.Result;
-
         long subDirTotal = dirEntry.SubDirectories.Sum((FileEntry sd) => sd.FileSize);
         
-        dirEntry.FileSize = localFileTotal + subDirTotal;
+        dirEntry.FileSize = totalFileSize + subDirTotal;
         
         OnDirectoryProcessed(dirEntry);
     }
 
-    private Task<long> FileCalculationInSeparateThread(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
+    private async ValueTask<long> FileCalculationInSeparateThread(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
-        Task<long> result;
         try
         {
-            _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-            result = Task.Run(() => TryProcessFiles(dirInfo, dirEntry, cancellationToken), cancellationToken);
+            await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            
+            return await Task.Run(() => TryProcessFiles(dirInfo, dirEntry, cancellationToken), cancellationToken);
         }
         finally
         {
             _semaphore.Release();
         }
-        return result;
     }
 
     private long TryProcessFiles(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
@@ -140,12 +135,12 @@ public sealed class DirectoryScanner
         return totalFileSize;
     }
 
-    private List<Task> TryEnqueueSubdirectories(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
+    private async ValueTask<List<Task>> TryEnqueueSubdirectories(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
         List<Task> subDirectoriesProcessTasks = [];
         try
         {
-            subDirectoriesProcessTasks = EnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
+            subDirectoriesProcessTasks = await EnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -170,7 +165,7 @@ public sealed class DirectoryScanner
         return subDirectoriesProcessTasks;
     }
 
-    private List<Task> EnqueueSubdirectories(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
+    private async ValueTask<List<Task>> EnqueueSubdirectories(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
         List<Task> subDirectoriesProcessTasks = new List<Task>();
         foreach (DirectoryInfo subDir in dirInfo.EnumerateDirectories())
@@ -181,17 +176,17 @@ public sealed class DirectoryScanner
                 
             dirEntry.AddSubDirectoryChild(subDirEntry);
                 
-            AddStartedProcessDirectoryInSeparateThread(cancellationToken, subDirectoriesProcessTasks, subDir, subDirEntry);
+            await AddStartedProcessDirectoryInSeparateThread(cancellationToken, subDirectoriesProcessTasks, subDir, subDirEntry);
         }
         return subDirectoriesProcessTasks;
     }
 
-    private void AddStartedProcessDirectoryInSeparateThread(CancellationToken cancellationToken,
+    private async Task AddStartedProcessDirectoryInSeparateThread(CancellationToken cancellationToken,
         List<Task> subDirectoriesProcessTasks, DirectoryInfo subDir, FileEntry subDirEntry)
     {
         try
         {
-            _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
             subDirectoriesProcessTasks.Add(Task.Run(
                 () => ProcessDirectoryAsync(subDir, subDirEntry, cancellationToken), cancellationToken)
             );

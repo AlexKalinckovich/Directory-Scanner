@@ -31,7 +31,10 @@
                         <TextBlock Text="{Binding Name}" Margin="2"/>
                         <TextBlock Text=" (" Margin="2"/>
                         <TextBlock Text="{Binding Size}" Margin="2"/>
-                        <TextBlock Text=" bytes)" Margin="2"/>
+                        <TextBlock Text=" bytes) " Margin="2"/>
+                        <TextBlock Text=" (" Margin="2"/>
+                        <TextBlock Text="{Binding Percent, StringFormat={}{0:F5}}" Margin="2"/>
+                        <TextBlock Text=" %)" Margin="2"/>
                     </StackPanel>
                 </HierarchicalDataTemplate>
             </TreeView.ItemTemplate>
