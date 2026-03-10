@@ -12,6 +12,7 @@
     </Window.DataContext>
     <Window.Resources>
         <converter:FileTypeToImageConverter x:Key="FileTypeToImageConverter" />
+        <converter:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter"></converter:BoolToVisibilityConverter>
     </Window.Resources>
     <Grid>
         <Grid.RowDefinitions>
@@ -22,7 +23,11 @@
             <Button Content="Scan" Command="{Binding StartScanCommand}" Margin="5" Padding="10,2" Width="350"/>
             <Button Content="Cancel" Command="{Binding CancelScanCommand}" Margin="5" Padding="10,2" Width="350"/>
         </StackPanel>
-        <TreeView Grid.Row="1" ItemsSource="{Binding RootItems}" Margin="5">
+        <TreeView Grid.Row="1" 
+                  ItemsSource="{Binding RootItems}" 
+                  Margin="5"
+                  VirtualizingStackPanel.IsVirtualizing="True"
+                  VirtualizingStackPanel.VirtualizationMode="Recycling">
             <TreeView.ItemTemplate>
                 <HierarchicalDataTemplate ItemsSource="{Binding Children}">
                     <StackPanel Orientation="Horizontal">
@@ -30,14 +35,21 @@
                                Width="16" Height="16" Margin="0,0,4,0" />
                         <TextBlock Text="{Binding Name}" Margin="2"/>
                         <TextBlock Text=" (" Margin="2"/>
-                        <TextBlock Text="{Binding Size}" Margin="2"/>
-                        <TextBlock Text=" bytes) " Margin="2"/>
-                        <TextBlock Text=" (" Margin="2"/>
-                        <TextBlock Text="{Binding Percent, StringFormat={}{0:F5}}" Margin="2"/>
-                        <TextBlock Text=" %)" Margin="2"/>
+                        <TextBlock Text=")" Margin="2"/>
+                        <TextBlock Text="(" Margin="2" 
+                                   Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Collapsed}"/>
+                        <TextBlock Text="{Binding Percent, StringFormat={}{0:F2}}" Margin="2"
+                                   Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Collapsed}"/>
+                        <TextBlock Text="%)" Margin="2"
+                                   Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibilityConverter}, ConverterParameter=Collapsed}"/>
                     </StackPanel>
                 </HierarchicalDataTemplate>
             </TreeView.ItemTemplate>
+            <TreeView.ItemContainerStyle>
+                <Style TargetType="TreeViewItem">
+                    <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                </Style>
+            </TreeView.ItemContainerStyle>
         </TreeView>
     </Grid>
 </Window>

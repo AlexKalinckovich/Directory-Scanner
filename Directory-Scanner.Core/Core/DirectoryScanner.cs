@@ -5,40 +5,75 @@ using Directory_Scanner.Core.ScannerEventArgs;
 
 namespace Directory_Scanner.Core.Core;
 
-
-
-public sealed class DirectoryScanner
+public sealed class DirectoryScanner : IDisposable
 {
     private const int InitialDelay = 10;
     private const int ContinueDelay = 50;
-    private readonly int _maxConcurrency = Environment.ProcessorCount * 2;
+    private readonly int _maxConcurrency;
     private readonly SemaphoreSlim _semaphore;
     private readonly ConcurrentQueue<DirectoryWorkItem> _directoryQueue;
-    
-    public event EventHandler<StartProcessingDirectoryEventArgs>? StartProcessingDirectory;
-    public event EventHandler<DirectoryProcessedEventArgs>? DirectoryProcessed;
-    public event EventHandler<FileProcessedEventArgs>? FileProcessed;
-    public event EventHandler<ProcessingCompletedEventArgs>? ProcessingCompleted;
+    private readonly EventDispatcher _eventDispatcher;
+    private readonly DirectorySizeCalculator _sizeCalculator;
+    private bool _isDisposed;
+
+    public event EventHandler<StartProcessingDirectoryEventArgs>? StartProcessingDirectory
+    {
+        add => _eventDispatcher.StartProcessingDirectory += value;
+        remove => _eventDispatcher.StartProcessingDirectory -= value;
+    }
+
+    public event EventHandler<DirectoryProcessedEventArgs>? DirectoryProcessed
+    {
+        add => _eventDispatcher.DirectoryProcessed += value;
+        remove => _eventDispatcher.DirectoryProcessed -= value;
+    }
+
+    public event EventHandler<FileProcessedEventArgs>? FileProcessed
+    {
+        add => _eventDispatcher.FileProcessed += value;
+        remove => _eventDispatcher.FileProcessed -= value;
+    }
+
+    public event EventHandler<ProcessingCompletedEventArgs>? ProcessingCompleted
+    {
+        add => _eventDispatcher.ProcessingCompleted += value;
+        remove => _eventDispatcher.ProcessingCompleted -= value;
+    }
 
     public DirectoryScanner()
     {
+        _maxConcurrency = Environment.ProcessorCount;
         _semaphore = new SemaphoreSlim(_maxConcurrency, _maxConcurrency);
         _directoryQueue = new ConcurrentQueue<DirectoryWorkItem>();
+        _eventDispatcher = new EventDispatcher();
+        _sizeCalculator = new DirectorySizeCalculator();
+        _isDisposed = false;
     }
 
     public async Task<FileEntry> ScanDirectoryAsync(string rootPath, CancellationToken cancellationToken = default)
     {
         AssertPathNotNullOrEmpty(rootPath);
-        
+
         DirectoryInfo rootDir = new DirectoryInfo(rootPath);
         AssertRootDirectoryExists(rootPath, rootDir);
 
         FileEntry rootEntry = new FileEntry(rootDir);
-        
-        await ProcessDirectoryQueueAsync(rootDir, rootEntry, cancellationToken);
-        
-        OnProcessingCompleted(rootEntry);
-        
+
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            await ProcessDirectoryQueueAsync(rootDir, rootEntry, cancellationToken);
+
+            _sizeCalculator.CalculateDirectorySizes(rootEntry);
+
+            _eventDispatcher.EnqueueProcessingCompleted(rootEntry);
+
+            await _eventDispatcher.WaitForCompletionAsync();
+        }
+        else
+        {
+            _sizeCalculator.CalculateDirectorySizes(rootEntry);
+        }
+
         return rootEntry;
     }
 
@@ -60,15 +95,31 @@ public sealed class DirectoryScanner
 
     private async Task ProcessDirectoryQueueAsync(DirectoryInfo rootDir, FileEntry rootEntry, CancellationToken cancellationToken)
     {
-        _directoryQueue.Enqueue(new DirectoryWorkItem(rootDir, rootEntry));
-        
+        DirectoryWorkItem rootWorkItem = new DirectoryWorkItem(rootDir, rootEntry);
+        _directoryQueue.Enqueue(rootWorkItem);
+
+        List<Task> workerTasks = CreateWorkerTasks(cancellationToken);
+
+        try
+        {
+            await Task.WhenAll(workerTasks);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private List<Task> CreateWorkerTasks(CancellationToken cancellationToken)
+    {
         List<Task> workerTasks = new List<Task>();
+
         for (int i = 0; i < _maxConcurrency; i++)
         {
-            workerTasks.Add(WorkerTaskAsync(cancellationToken));
+            Task workerTask = WorkerTaskAsync(cancellationToken);
+            workerTasks.Add(workerTask);
         }
-        
-        await Task.WhenAll(workerTasks).ConfigureAwait(false);
+
+        return workerTasks;
     }
 
     private async Task WorkerTaskAsync(CancellationToken cancellationToken)
@@ -111,48 +162,52 @@ public sealed class DirectoryScanner
 
     private async Task<bool> ShouldWorkerExitAsync(CancellationToken cancellationToken)
     {
-        await Task.Delay(InitialDelay, cancellationToken).ConfigureAwait(false);
-        
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return true;
+        }
+
+        await Task.Delay(InitialDelay, cancellationToken);
+
         if (_directoryQueue.TryDequeue(out _))
         {
             return false;
         }
-        
-        await Task.Delay(ContinueDelay, cancellationToken).ConfigureAwait(false);
-        
+
+        await Task.Delay(ContinueDelay, cancellationToken);
+
         if (_directoryQueue.TryDequeue(out _))
         {
             return false;
         }
-        
-        await Task.Delay(ContinueDelay, cancellationToken).ConfigureAwait(false);
-        
-        return !_directoryQueue.TryDequeue(out _);
+
+        await Task.Delay(ContinueDelay, cancellationToken);
+
+        bool isEmpty = !_directoryQueue.TryDequeue(out _);
+
+        return isEmpty;
     }
 
     private async Task ProcessSingleDirectoryAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
-        OnStartProcessingDirectory(dirEntry);
-        
+        _eventDispatcher.EnqueueStartProcessing(dirEntry);
+
         cancellationToken.ThrowIfCancellationRequested();
-        
-        long totalFileSize = await FileCalculationInSeparateThread(dirInfo, dirEntry, cancellationToken);
-        
+
+        await ProcessFilesAsync(dirInfo, dirEntry, cancellationToken);
+
         await EnqueueSubdirectoriesAsync(dirInfo, dirEntry, cancellationToken);
-        
-        long subDirTotal = dirEntry.SubDirectories.Sum(sd => sd.FileSize);
-        dirEntry.FileSize = totalFileSize + subDirTotal;
-        
-        OnDirectoryProcessed(dirEntry);
+
+        _eventDispatcher.EnqueueDirectoryProcessed(dirEntry);
     }
 
-    private async ValueTask<long> FileCalculationInSeparateThread(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
+    private async Task ProcessFilesAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
+        await _semaphore.WaitAsync(cancellationToken);
+
         try
         {
-            await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-            
-            return await Task.Run(() => TryProcessFiles(dirInfo, dirEntry, cancellationToken), cancellationToken);
+            ProcessFiles(dirInfo, dirEntry, cancellationToken);
         }
         finally
         {
@@ -160,104 +215,107 @@ public sealed class DirectoryScanner
         }
     }
 
-    private long TryProcessFiles(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
+    private void ProcessFiles(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
-        long totalFileSize;
-        try
-        {
-            totalFileSize = ProcessFiles(dirInfo, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (UnauthorizedAccessException e)
-        {
-            Debug.WriteLine("DEBUG!!!!!!!!!!!: " + e.Message);
-            dirEntry.FileState = FileState.AccessDenied;
-            totalFileSize = 0;
-        }
-        catch (IOException e)
-        {
-            Debug.WriteLine("DEBUG!!!!!!!!!!!: " + e.Message);
-            dirEntry.FileState = FileState.IoError;
-            totalFileSize = 0;
-        }
-        catch (Exception e)
-        {
-            Debug.WriteLine("DEBUG!!!!!!!!!!!: " + e.Message);
-            dirEntry.FileState = FileState.UnknownError;
-            totalFileSize = 0;
-        }
-        
-        return totalFileSize;
-    }
+        IEnumerable<FileInfo> files = dirInfo.EnumerateFiles();
 
-    private long ProcessFiles(DirectoryInfo dirInfo, CancellationToken cancellationToken)
-    {
-        long totalFileSize = 0;
-        foreach (FileInfo fileInfo in dirInfo.EnumerateFiles())
+        foreach (FileInfo fileInfo in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             FileEntry fileEntry = new FileEntry(fileInfo);
 
-            OnFileProcessed(fileEntry);
-            
-            totalFileSize += fileInfo.Length;
+            dirEntry.AddSubDirectoryChild(fileEntry);
+
+            _eventDispatcher.EnqueueFileProcessed(fileEntry);
         }
-        return totalFileSize;
     }
 
-    private async Task EnqueueSubdirectoriesAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
+    private Task EnqueueSubdirectoriesAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
         try
         {
-            foreach (DirectoryInfo subDir in dirInfo.EnumerateDirectories())
+            IEnumerable<DirectoryInfo> subDirs = dirInfo.EnumerateDirectories();
+
+            foreach (DirectoryInfo subDir in subDirs)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                FileEntry subDirEntry = new FileEntry(subDir);
-                
-                dirEntry.AddSubDirectoryChild(subDirEntry);
-                
-                _directoryQueue.Enqueue(new DirectoryWorkItem(subDir, subDirEntry));
+                EnqueueSingleSubdirectory(subDir, dirEntry);
             }
         }
-        catch (UnauthorizedAccessException e)
+        catch (UnauthorizedAccessException ex)
         {
-            Debug.WriteLine("DEBUG!!!!!!!!!!!: " + e.Message);
-            dirEntry.FileState = FileState.AccessDenied;
+            HandleAccessDenied(dirEntry, ex);
         }
-        catch (IOException e)
+        catch (IOException ex)
         {
-            Debug.WriteLine("DEBUG!!!!!!!!!!!: " + e.Message);
-            dirEntry.FileState = FileState.IoError;
+            HandleIoError(dirEntry, ex);
         }
-        catch (Exception e)
+        catch (Exception ex)
         {
-            Debug.WriteLine("DEBUG!!!!!!!!!!!: " + e.Message);
-            dirEntry.FileState = FileState.UnknownError;
+            HandleUnknownError(dirEntry, ex);
         }
+
+        return Task.CompletedTask;
     }
 
-    private void OnStartProcessingDirectory(FileEntry dirEntry)
+    private void EnqueueSingleSubdirectory(DirectoryInfo subDir, FileEntry dirEntry)
     {
-        StartProcessingDirectory?.Invoke(this, new StartProcessingDirectoryEventArgs(dirEntry));
+        FileEntry subDirEntry = new FileEntry(subDir);
+
+        dirEntry.AddSubDirectoryChild(subDirEntry);
+
+        DirectoryWorkItem workItem = new DirectoryWorkItem(subDir, subDirEntry);
+
+        _directoryQueue.Enqueue(workItem);
     }
 
-    private void OnDirectoryProcessed(FileEntry dirEntry)
+    private static void HandleAccessDenied(FileEntry entry, Exception ex)
     {
-        DirectoryProcessed?.Invoke(this, new DirectoryProcessedEventArgs(dirEntry));
+        Debug.WriteLine("DEBUG!!!!!!!!!!!:  " + ex.Message);
+        entry.FileState = FileState.AccessDenied;
     }
 
-    private void OnFileProcessed(FileEntry fileEntry)
+    private static void HandleIoError(FileEntry entry, Exception ex)
     {
-        FileProcessed?.Invoke(this, new FileProcessedEventArgs(fileEntry));
+        Debug.WriteLine("DEBUG!!!!!!!!!!!:  " + ex.Message);
+        entry.FileState = FileState.IoError;
     }
 
-    private void OnProcessingCompleted(FileEntry rootEntry)
+    private static void HandleUnknownError(FileEntry entry, Exception ex)
     {
-        ProcessingCompleted?.Invoke(this, new ProcessingCompletedEventArgs(rootEntry));
+        Debug.WriteLine("DEBUG!!!!!!!!!!!:  " + ex.Message);
+        entry.FileState = FileState.UnknownError;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        _isDisposed = true;
+
+        await _eventDispatcher.StopAsync();
+
+        _semaphore.Dispose();
+
+        _eventDispatcher.Dispose();
+    }
+
+    public void Dispose()
+    {
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        _isDisposed = true;
+
+        _semaphore.Dispose();
+
+        _eventDispatcher.Dispose();
     }
 }

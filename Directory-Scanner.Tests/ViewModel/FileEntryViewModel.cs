@@ -5,12 +5,10 @@ namespace Directory_Scanner.UI.Model;
 
 public class FileEntryViewModel : ViewModelBase
 {
-    internal readonly FileEntry _model;
+    private readonly FileEntry _model;
     private bool _isExpanded;
     private double _percent;
     private string _sizeText;
-    private bool _isLoading;
-    private long _size;
 
     public FileEntryViewModel(FileEntry model)
     {
@@ -18,24 +16,14 @@ public class FileEntryViewModel : ViewModelBase
         Children = new ObservableCollection<FileEntryViewModel>();
         _isExpanded = false;
         _percent = model.Percentage;
-        _size = model.FileSize;
         _sizeText = FormatSize(model.FileSize);
-        _isLoading = false;
     }
 
     public string Name => _model.FileName;
 
-    public long Size
-    {
-        get => _size;
-        set => SetProperty(ref _size, value);
-    }
+    public long Size => _model.FileSize;
 
-    public string SizeText
-    {
-        get => _sizeText;
-        set => SetProperty(ref _sizeText, value);
-    }
+    public string SizeText => _sizeText;
 
     public FileType Type => _model.FileType;
 
@@ -59,29 +47,14 @@ public class FileEntryViewModel : ViewModelBase
         set => SetProperty(ref _percent, value);
     }
 
-    public bool IsLoading
-    {
-        get => _isLoading;
-        set => SetProperty(ref _isLoading, value);
-    }
-
-    public void MarkAsLoading()
-    {
-        IsLoading = true;
-        SizeText = "Loading...";
-    }
-
     public void UpdateFromModel()
     {
         _percent = _model.Percentage;
-        _size = _model.FileSize;
         _sizeText = FormatSize(_model.FileSize);
-        IsLoading = false;
-
+        
         OnPropertyChanged(nameof(Size));
         OnPropertyChanged(nameof(SizeText));
         OnPropertyChanged(nameof(Percent));
-        OnPropertyChanged(nameof(IsLoading));
     }
 
     public void RefreshChildren()
