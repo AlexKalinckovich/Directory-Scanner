@@ -39,7 +39,7 @@ public class EdgeCaseTests
         var startCount = 0;
         scanner.StartProcessingDirectory += (s, e) => Interlocked.Increment(ref startCount);
 
-        await scanner.ScanDirectoryAsync(_rootPath);
+        var a = await scanner.ScanDirectoryAsync(_rootPath);
 
         startCount.Should().Be(depth + 1);
     }

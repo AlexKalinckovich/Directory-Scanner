@@ -5,11 +5,16 @@ using Directory_Scanner.Core.ScannerEventArgs;
 
 namespace Directory_Scanner.Core.Core;
 
+
+
 public sealed class DirectoryScanner
 {
+    private const int InitialDelay = 10;
+    private const int ContinueDelay = 50;
     private readonly int _maxConcurrency = Environment.ProcessorCount * 2;
     private readonly SemaphoreSlim _semaphore;
-
+    private readonly ConcurrentQueue<DirectoryWorkItem> _directoryQueue;
+    
     public event EventHandler<StartProcessingDirectoryEventArgs>? StartProcessingDirectory;
     public event EventHandler<DirectoryProcessedEventArgs>? DirectoryProcessed;
     public event EventHandler<FileProcessedEventArgs>? FileProcessed;
@@ -18,6 +23,7 @@ public sealed class DirectoryScanner
     public DirectoryScanner()
     {
         _semaphore = new SemaphoreSlim(_maxConcurrency, _maxConcurrency);
+        _directoryQueue = new ConcurrentQueue<DirectoryWorkItem>();
     }
 
     public async Task<FileEntry> ScanDirectoryAsync(string rootPath, CancellationToken cancellationToken = default)
@@ -25,12 +31,11 @@ public sealed class DirectoryScanner
         AssertPathNotNullOrEmpty(rootPath);
         
         DirectoryInfo rootDir = new DirectoryInfo(rootPath);
-        
         AssertRootDirectoryExists(rootPath, rootDir);
 
         FileEntry rootEntry = new FileEntry(rootDir);
         
-        await ProcessDirectoryAsync(rootDir, rootEntry, cancellationToken);
+        await ProcessDirectoryQueueAsync(rootDir, rootEntry, cancellationToken);
         
         OnProcessingCompleted(rootEntry);
         
@@ -53,20 +58,89 @@ public sealed class DirectoryScanner
         }
     }
 
-    private async Task ProcessDirectoryAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
+    private async Task ProcessDirectoryQueueAsync(DirectoryInfo rootDir, FileEntry rootEntry, CancellationToken cancellationToken)
+    {
+        _directoryQueue.Enqueue(new DirectoryWorkItem(rootDir, rootEntry));
+        
+        List<Task> workerTasks = new List<Task>();
+        for (int i = 0; i < _maxConcurrency; i++)
+        {
+            workerTasks.Add(WorkerTaskAsync(cancellationToken));
+        }
+        
+        await Task.WhenAll(workerTasks).ConfigureAwait(false);
+    }
+
+    private async Task WorkerTaskAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                if (_directoryQueue.TryDequeue(out DirectoryWorkItem workItem))
+                {
+                    await ProcessWorkItemAsync(workItem, cancellationToken);
+                }
+                else if (await ShouldWorkerExitAsync(cancellationToken))
+                {
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task ProcessWorkItemAsync(DirectoryWorkItem workItem, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ProcessSingleDirectoryAsync(workItem.DirInfo, workItem.DirEntry, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Worker error: {ex.Message}");
+            workItem.DirEntry.FileState = FileState.UnknownError;
+        }
+    }
+
+    private async Task<bool> ShouldWorkerExitAsync(CancellationToken cancellationToken)
+    {
+        await Task.Delay(InitialDelay, cancellationToken).ConfigureAwait(false);
+        
+        if (_directoryQueue.TryDequeue(out _))
+        {
+            return false;
+        }
+        
+        await Task.Delay(ContinueDelay, cancellationToken).ConfigureAwait(false);
+        
+        if (_directoryQueue.TryDequeue(out _))
+        {
+            return false;
+        }
+        
+        await Task.Delay(ContinueDelay, cancellationToken).ConfigureAwait(false);
+        
+        return !_directoryQueue.TryDequeue(out _);
+    }
+
+    private async Task ProcessSingleDirectoryAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
         OnStartProcessingDirectory(dirEntry);
         
         cancellationToken.ThrowIfCancellationRequested();
-            
+        
         long totalFileSize = await FileCalculationInSeparateThread(dirInfo, dirEntry, cancellationToken);
-            
-        List<Task> subDirTasks = await TryEnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
         
-        await Task.WhenAll(subDirTasks).ConfigureAwait(false);
+        await EnqueueSubdirectoriesAsync(dirInfo, dirEntry, cancellationToken);
         
-        long subDirTotal = dirEntry.SubDirectories.Sum((FileEntry sd) => sd.FileSize);
-        
+        long subDirTotal = dirEntry.SubDirectories.Sum(sd => sd.FileSize);
         dirEntry.FileSize = totalFileSize + subDirTotal;
         
         OnDirectoryProcessed(dirEntry);
@@ -99,19 +173,19 @@ public sealed class DirectoryScanner
         }
         catch (UnauthorizedAccessException e)
         {
-            Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
+            Debug.WriteLine("DEBUG!!!!!!!!!!!: " + e.Message);
             dirEntry.FileState = FileState.AccessDenied;
             totalFileSize = 0;
         }
         catch (IOException e)
         {
-            Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
+            Debug.WriteLine("DEBUG!!!!!!!!!!!: " + e.Message);
             dirEntry.FileState = FileState.IoError;
             totalFileSize = 0;
         }
         catch (Exception e)
         {
-            Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
+            Debug.WriteLine("DEBUG!!!!!!!!!!!: " + e.Message);
             dirEntry.FileState = FileState.UnknownError;
             totalFileSize = 0;
         }
@@ -135,65 +209,35 @@ public sealed class DirectoryScanner
         return totalFileSize;
     }
 
-    private async ValueTask<List<Task>> TryEnqueueSubdirectories(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
+    private async Task EnqueueSubdirectoriesAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
-        List<Task> subDirectoriesProcessTasks = [];
         try
         {
-            subDirectoriesProcessTasks = await EnqueueSubdirectories(dirInfo, dirEntry, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
+            foreach (DirectoryInfo subDir in dirInfo.EnumerateDirectories())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                FileEntry subDirEntry = new FileEntry(subDir);
+                
+                dirEntry.AddSubDirectoryChild(subDirEntry);
+                
+                _directoryQueue.Enqueue(new DirectoryWorkItem(subDir, subDirEntry));
+            }
         }
         catch (UnauthorizedAccessException e)
         {
-            Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
+            Debug.WriteLine("DEBUG!!!!!!!!!!!: " + e.Message);
             dirEntry.FileState = FileState.AccessDenied;
         }
         catch (IOException e)
         {
-            Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
+            Debug.WriteLine("DEBUG!!!!!!!!!!!: " + e.Message);
             dirEntry.FileState = FileState.IoError;
         }
         catch (Exception e)
         {
-            Debug.WriteLine("DEBUG!!!!!!!!!!!:" + e.Message);
+            Debug.WriteLine("DEBUG!!!!!!!!!!!: " + e.Message);
             dirEntry.FileState = FileState.UnknownError;
-        }
-
-        return subDirectoriesProcessTasks;
-    }
-
-    private async ValueTask<List<Task>> EnqueueSubdirectories(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
-    {
-        List<Task> subDirectoriesProcessTasks = new List<Task>();
-        foreach (DirectoryInfo subDir in dirInfo.EnumerateDirectories())
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            FileEntry subDirEntry = new FileEntry(subDir);
-                
-            dirEntry.AddSubDirectoryChild(subDirEntry);
-                
-            await AddStartedProcessDirectoryInSeparateThread(cancellationToken, subDirectoriesProcessTasks, subDir, subDirEntry);
-        }
-        return subDirectoriesProcessTasks;
-    }
-
-    private async Task AddStartedProcessDirectoryInSeparateThread(CancellationToken cancellationToken,
-        List<Task> subDirectoriesProcessTasks, DirectoryInfo subDir, FileEntry subDirEntry)
-    {
-        try
-        {
-            await _semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-            subDirectoriesProcessTasks.Add(Task.Run(
-                () => ProcessDirectoryAsync(subDir, subDirEntry, cancellationToken), cancellationToken)
-            );
-        }
-        finally
-        {
-            _semaphore.Release();   
         }
     }
 

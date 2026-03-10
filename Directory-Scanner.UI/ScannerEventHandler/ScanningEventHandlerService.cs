@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Windows;
+using System.Windows.Threading;
 using Directory_Scanner.Core.FileModels;
 using Directory_Scanner.Core.ScannerEventArgs;
 using Directory_Scanner.UI.Context;
@@ -9,19 +10,28 @@ namespace Directory_Scanner.UI.ScannerEventHandler;
 
 public sealed class ScannerEventHandlingService : IDisposable
 {
+    private long _size = 0;
+    public long Size => _size;
+    
     private readonly ScannerEventContext _context;
     private readonly ConcurrentDictionary<string, FileEntryViewModel> _viewModelCache;
+    private readonly ConcurrentQueue<FileEntryViewModel> _orphanedFiles;
     private readonly List<FileEntryViewModel> _pendingFileChildren;
     private readonly object _batchLock;
     private readonly Timer _flushTimer;
+    private readonly Dispatcher _dispatcher;
     private bool _disposed;
+
+    public event EventHandler<FileProcessedEventArgs>? FileProcessed;
 
     public ScannerEventHandlingService(ScannerEventContext context)
     {
         _context = context;
         _viewModelCache = new ConcurrentDictionary<string, FileEntryViewModel>();
+        _orphanedFiles = new ConcurrentQueue<FileEntryViewModel>();
         _pendingFileChildren = new List<FileEntryViewModel>();
         _batchLock = new object();
+        _dispatcher = Application.Current.Dispatcher;
         _flushTimer = new Timer(FlushPendingFiles, null, 0, 100);
     }
 
@@ -29,6 +39,8 @@ public sealed class ScannerEventHandlingService : IDisposable
     {
         FlushPendingFiles(synchronous: true);
         _viewModelCache.Clear();
+        _orphanedFiles.Clear();
+        Interlocked.Exchange(ref _size, 0);
     }
 
     public void HandleStartProcessingDirectory(object? sender, StartProcessingDirectoryEventArgs e)
@@ -39,15 +51,17 @@ public sealed class ScannerEventHandlingService : IDisposable
 
         if (_context.RootItems.Count == 0)
         {
-            Application.Current.Dispatcher.BeginInvoke(() => _context.RootItems.Add(viewModel));
+            _dispatcher.Invoke(() => _context.RootItems.Add(viewModel));
         }
         else if (parentPath != null)
         {
             if (_viewModelCache.TryGetValue(parentPath, out FileEntryViewModel? parent))
             {
-                Application.Current.Dispatcher.BeginInvoke(() => parent.Children.Add(viewModel));
+                _dispatcher.Invoke(() => parent.Children.Add(viewModel));
             }
         }
+
+        TryAttachOrphanedFiles(parentPath);
     }
 
     public void HandleFileProcessed(object? sender, FileProcessedEventArgs e)
@@ -55,28 +69,80 @@ public sealed class ScannerEventHandlingService : IDisposable
         FileEntryViewModel viewModel = new FileEntryViewModel(e.FileEntry);
         _viewModelCache.TryAdd(e.FileEntry.FullPath, viewModel);
         
-        lock (_batchLock)
+        Interlocked.Add(ref _size, e.FileEntry.FileSize);
+        
+        string? parentPath = e.FileEntry.ParentPath;
+        
+        if (parentPath != null && _viewModelCache.TryGetValue(parentPath, out FileEntryViewModel? parent))
         {
-            _pendingFileChildren.Add(viewModel);
+            lock (_batchLock)
+            {
+                _pendingFileChildren.Add(viewModel);
+            }
         }
+        else
+        {
+            _orphanedFiles.Enqueue(viewModel);
+        }
+        
+        FlushPendingFiles(synchronous: false);
+
+        FileProcessed?.Invoke(sender, e);
     }
 
     public void HandleDirectoryProcessed(object? sender, DirectoryProcessedEventArgs e)
     {
         if (_viewModelCache.TryGetValue(e.DirectoryEntry.FullPath, out FileEntryViewModel? viewModel))
-        {
-            Application.Current.Dispatcher.BeginInvoke(viewModel.RaiseSizeChanged);
+        { 
+            _dispatcher.Invoke(viewModel.RaiseSizeChanged);
             
             if (e.DirectoryEntry.FullPath == _context.SelectedPathGetter())
             {
-                Application.Current.Dispatcher.BeginInvoke(() => _context.TotalSizeSetter(e.DirectoryEntry.FileSize));
+                _dispatcher.Invoke(() => _context.TotalSizeSetter(e.DirectoryEntry.FileSize));
             }
         }
+
+        TryAttachOrphanedFiles(e.DirectoryEntry.FullPath);
     }
 
     public void HandleProcessingCompleted(object? sender, ProcessingCompletedEventArgs e)
     {
         FlushPendingFiles(synchronous: true);
+    }
+
+    private void TryAttachOrphanedFiles(string? parentPath)
+    {
+        if (parentPath == null)
+            return;
+
+        List<FileEntryViewModel> toAttach = new List<FileEntryViewModel>();
+        
+        int count = _orphanedFiles.Count;
+        for (int i = 0; i < count; i++)
+        {
+            if (_orphanedFiles.TryDequeue(out FileEntryViewModel? orphan))
+            {
+                if (orphan.ParentPath == parentPath)
+                {
+                    toAttach.Add(orphan);
+                }
+                else
+                {
+                    _orphanedFiles.Enqueue(orphan);
+                }
+            }
+        }
+
+        if (toAttach.Count > 0 && _viewModelCache.TryGetValue(parentPath, out FileEntryViewModel? parent))
+        {
+            _dispatcher.Invoke(() =>
+            {
+                foreach (FileEntryViewModel child in toAttach)
+                {
+                    parent.Children.Add(child);
+                }
+            });
+        }
     }
 
     private FileEntryViewModel CreateAndCacheViewModel(FileEntry entry)
@@ -129,11 +195,11 @@ public sealed class ScannerEventHandlingService : IDisposable
     {
         if (synchronous)
         {
-            Application.Current.Dispatcher.Invoke(() => AddGroupedChildren(grouped));
+            _dispatcher.Invoke(() => AddGroupedChildren(grouped));
         }
         else
         {
-            Application.Current.Dispatcher.BeginInvoke(new Action(() => AddGroupedChildren(grouped)));
+            _dispatcher.Invoke(() => AddGroupedChildren(grouped));
         }
     }
 

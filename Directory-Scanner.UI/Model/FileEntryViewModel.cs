@@ -5,7 +5,7 @@ namespace Directory_Scanner.UI.Model;
 
 public class FileEntryViewModel : ViewModelBase
 {
-    private readonly FileEntry _model;
+    internal readonly FileEntry _model;
     private bool _isExpanded;
     private double _percent;
 
@@ -16,9 +16,15 @@ public class FileEntryViewModel : ViewModelBase
     }
 
     public string Name => _model.FileName;
+    
     public long Size => _model.FileSize;
+    
     public FileType Type => _model.FileType;
+    
     public string? ParentPath => _model.ParentPath;
+    
+    public string FullPath => _model.FullPath;
+    
     public ObservableCollection<FileEntryViewModel> Children { get; }
 
     public bool IsExpanded
@@ -34,4 +40,46 @@ public class FileEntryViewModel : ViewModelBase
     }
 
     public void RaiseSizeChanged() => OnPropertyChanged(nameof(Size));
+
+    
+    
+    
+    public void UpdateSizeFromModel()
+    {
+        OnPropertyChanged(nameof(Size));
+    }
+
+    
+    
+    
+    
+    public long CalculateTotalSize()
+    {
+        long totalSize = Size;
+
+        foreach (FileEntryViewModel child in Children)
+        {
+            totalSize += child.CalculateTotalSize();
+        }
+
+        return totalSize;
+    }
+
+    
+    
+    
+    public void UpdateSizeFromChildren()
+    {
+        long childrenTotal = 0;
+
+        foreach (FileEntryViewModel child in Children)
+        {
+            child.UpdateSizeFromChildren();
+            childrenTotal += child.Size;
+        }
+        
+        _model.FileSize += childrenTotal;
+        
+        OnPropertyChanged(nameof(Size));
+    }
 }

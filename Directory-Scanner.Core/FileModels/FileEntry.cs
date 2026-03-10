@@ -8,7 +8,6 @@ public sealed class FileEntry
     public string FullPath { get; }
     public long FileSize { get; set; }
     public FileState FileState { get; set; }
-
     private List<FileEntry>? _subDirectories;
     public IReadOnlyList<FileEntry> SubDirectories => _subDirectories ??= new List<FileEntry>();
 
@@ -16,7 +15,7 @@ public sealed class FileEntry
     {
         FullPath = directoryInfo.FullName;
         FileName = directoryInfo.Name;
-        ParentPath = string.Intern(directoryInfo.Parent?.FullName ?? string.Empty);
+        ParentPath = directoryInfo.Parent?.FullName ?? string.Empty;
         FileSize = 0;
         FileType = FileType.Directory;
         FileState = FileState.Ok;
@@ -26,7 +25,7 @@ public sealed class FileEntry
     {
         FullPath = fileInfo.FullName;
         FileName = fileInfo.Name;
-        ParentPath = string.Intern(fileInfo.DirectoryName ?? string.Empty);
+        ParentPath = fileInfo.DirectoryName;
         FileSize = fileInfo.Length;
         FileType = FileType.File;
         FileState = FileState.Ok;
@@ -37,4 +36,6 @@ public sealed class FileEntry
         _subDirectories ??= new List<FileEntry>();
         _subDirectories.Add(child);
     }
+
+    
 }
