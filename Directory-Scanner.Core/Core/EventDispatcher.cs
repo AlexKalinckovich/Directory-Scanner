@@ -8,7 +8,7 @@ namespace Directory_Scanner.Core.Core;
 
 public sealed class EventDispatcher : IDisposable
 {
-    private readonly ConcurrentQueue<object> _eventQueue;
+    private readonly ConcurrentQueue<object?> _eventQueue;
     private readonly Task _processingTask;
     private readonly CancellationTokenSource _cancellationTokenSource;
     private readonly TaskCompletionSource<bool> _completionTcs;
@@ -21,7 +21,7 @@ public sealed class EventDispatcher : IDisposable
 
     public EventDispatcher()
     {
-        _eventQueue = new ConcurrentQueue<object>();
+        _eventQueue = new ConcurrentQueue<object?>();
         _cancellationTokenSource = new CancellationTokenSource();
         _processingTask = Task.Run(ProcessEventsAsync);
         _completionTcs = new TaskCompletionSource<bool>();
@@ -34,7 +34,7 @@ public sealed class EventDispatcher : IDisposable
 
         while (!token.IsCancellationRequested)
         {
-            if (_eventQueue.TryDequeue(out object eventData))
+            if (_eventQueue.TryDequeue(out object? eventData))
             {
                 DispatchEvent(eventData);
 
@@ -49,8 +49,8 @@ public sealed class EventDispatcher : IDisposable
             }
         }
     }
-
-    private void DispatchEvent(object eventData)
+    
+    private void DispatchEvent(object? eventData)
     {
         if (eventData is StartProcessingDirectoryEventArgs startArgs)
         {
@@ -106,7 +106,7 @@ public sealed class EventDispatcher : IDisposable
             return;
         }
 
-        _cancellationTokenSource.Cancel();
+        await _cancellationTokenSource.CancelAsync();
 
         try
         {

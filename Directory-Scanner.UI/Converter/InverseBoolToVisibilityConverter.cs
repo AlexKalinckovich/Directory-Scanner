@@ -2,26 +2,26 @@ namespace Directory_Scanner.UI.Converter;
 
 using System;
 using System.Globalization;
-using System.Windows;
 using System.Windows.Data;
 
-public sealed class BoolToVisibilityConverter : IValueConverter
+
+public sealed class InverseBoolConverter : IValueConverter
 {
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
         if (value is bool boolValue)
         {
-            return boolValue ? Visibility.Visible : Visibility.Collapsed;
+            return !boolValue;
         }
 
-        return Visibility.Collapsed;
+        return false;
     }
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
-        if (value is Visibility visibility)
+        if (value is bool boolValue)
         {
-            return visibility == Visibility.Visible;
+            return !boolValue;
         }
 
         return false;

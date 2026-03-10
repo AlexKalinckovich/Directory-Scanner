@@ -42,7 +42,17 @@ public sealed class DirectoryScanner : IDisposable
 
     public DirectoryScanner()
     {
-        _maxConcurrency = Environment.ProcessorCount;
+        _maxConcurrency = Environment.ProcessorCount * 2;
+        _semaphore = new SemaphoreSlim(_maxConcurrency, _maxConcurrency);
+        _directoryQueue = new ConcurrentQueue<DirectoryWorkItem>();
+        _eventDispatcher = new EventDispatcher();
+        _sizeCalculator = new DirectorySizeCalculator();
+        _isDisposed = false;
+    }
+
+    public DirectoryScanner(int maxConcurrency)
+    {
+        _maxConcurrency = maxConcurrency;
         _semaphore = new SemaphoreSlim(_maxConcurrency, _maxConcurrency);
         _directoryQueue = new ConcurrentQueue<DirectoryWorkItem>();
         _eventDispatcher = new EventDispatcher();
@@ -53,8 +63,9 @@ public sealed class DirectoryScanner : IDisposable
     public async Task<FileEntry> ScanDirectoryAsync(string rootPath, CancellationToken cancellationToken = default)
     {
         AssertPathNotNullOrEmpty(rootPath);
-
+        
         DirectoryInfo rootDir = new DirectoryInfo(rootPath);
+        
         AssertRootDirectoryExists(rootPath, rootDir);
 
         FileEntry rootEntry = new FileEntry(rootDir);
@@ -74,7 +85,7 @@ public sealed class DirectoryScanner : IDisposable
             _sizeCalculator.CalculateDirectorySizes(rootEntry);
         }
 
-        return rootEntry;
+        return rootEntry; 
     }
 
     private static void AssertPathNotNullOrEmpty(string path)
@@ -105,17 +116,17 @@ public sealed class DirectoryScanner : IDisposable
             await Task.WhenAll(workerTasks);
         }
         catch (OperationCanceledException)
-        {
-        }
+        { }
     }
 
     private List<Task> CreateWorkerTasks(CancellationToken cancellationToken)
     {
-        List<Task> workerTasks = new List<Task>();
+        List<Task> workerTasks = new List<Task>(_maxConcurrency);
 
         for (int i = 0; i < _maxConcurrency; i++)
         {
             Task workerTask = WorkerTaskAsync(cancellationToken);
+            
             workerTasks.Add(workerTask);
         }
 
@@ -196,7 +207,7 @@ public sealed class DirectoryScanner : IDisposable
 
         await ProcessFilesAsync(dirInfo, dirEntry, cancellationToken);
 
-        await EnqueueSubdirectoriesAsync(dirInfo, dirEntry, cancellationToken);
+        EnqueueSubdirectoriesAsync(dirInfo, dirEntry, cancellationToken);
 
         _eventDispatcher.EnqueueDirectoryProcessed(dirEntry);
     }
@@ -231,7 +242,7 @@ public sealed class DirectoryScanner : IDisposable
         }
     }
 
-    private Task EnqueueSubdirectoriesAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
+    private void EnqueueSubdirectoriesAsync(DirectoryInfo dirInfo, FileEntry dirEntry, CancellationToken cancellationToken)
     {
         try
         {
@@ -257,7 +268,6 @@ public sealed class DirectoryScanner : IDisposable
             HandleUnknownError(dirEntry, ex);
         }
 
-        return Task.CompletedTask;
     }
 
     private void EnqueueSingleSubdirectory(DirectoryInfo subDir, FileEntry dirEntry)

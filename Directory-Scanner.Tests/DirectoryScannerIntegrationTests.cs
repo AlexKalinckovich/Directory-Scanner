@@ -270,7 +270,7 @@ public class DirectoryScannerIntegrationTests
     {
         CreateDeepDirectoryStructure(_testDirectory, 10);
 
-        DirectoryScanner scanner = new DirectoryScanner();
+        DirectoryScanner scanner = new DirectoryScanner(1);
 
         FileEntry result = await scanner.ScanDirectoryAsync(_testDirectory);
 
@@ -293,7 +293,7 @@ public class DirectoryScannerIntegrationTests
             File.WriteAllText(Path.Combine(subDir, $"file{i}.txt"), $"Content{i}");
         }
 
-        DirectoryScanner scanner = new DirectoryScanner();
+        DirectoryScanner scanner = new DirectoryScanner(2);
         CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         FileEntry result = await scanner.ScanDirectoryAsync(_testDirectory, cts.Token);
@@ -309,7 +309,7 @@ public class DirectoryScannerIntegrationTests
     {
         CreateDeepDirectoryStructure(_testDirectory, 20);
 
-        DirectoryScanner scanner = new DirectoryScanner();
+        DirectoryScanner scanner = new DirectoryScanner(1);
         CancellationTokenSource cts = new CancellationTokenSource();
         cts.CancelAfter(50);
 
@@ -343,7 +343,7 @@ public class DirectoryScannerIntegrationTests
         File.WriteAllBytes(Path.Combine(subDir2, "file2.bin"), content2);
         File.WriteAllBytes(Path.Combine(_testDirectory, "file3.bin"), content3);
 
-        DirectoryScanner scanner = new DirectoryScanner();
+        DirectoryScanner scanner = new DirectoryScanner(4);
 
         FileEntry result = await scanner.ScanDirectoryAsync(_testDirectory);
 
@@ -363,7 +363,7 @@ public class DirectoryScannerIntegrationTests
     [Test]
     public async Task EmptyDirectory_ShouldReturnValidEntry()
     {
-        DirectoryScanner scanner = new DirectoryScanner();
+        DirectoryScanner scanner = new DirectoryScanner(15);
 
         FileEntry result = await scanner.ScanDirectoryAsync(_testDirectory);
 
@@ -485,12 +485,9 @@ public class DirectoryScannerIntegrationTests
 
         foreach (FileEntry result in partialResults)
         {
-            if (result != null)
-            {
-                result.FullPath.Should().Be(_testDirectory);
-                result.Percentage.Should().BeGreaterThanOrEqualTo(0.0);
-                result.Percentage.Should().BeLessThanOrEqualTo(100.0);
-            }
+            result.FullPath.Should().Be(_testDirectory);
+            result.Percentage.Should().BeGreaterThanOrEqualTo(0.0);
+            result.Percentage.Should().BeLessThanOrEqualTo(100.0);
         }
     }
 

@@ -5,25 +5,29 @@ namespace Directory_Scanner.UI.Model;
 
 public class FileEntryViewModel : ViewModelBase
 {
-    internal readonly FileEntry _model;
-    private bool _isExpanded;
-    private double _percent;
-    private string _sizeText;
+    private readonly FileEntry _model;
     private bool _isLoading;
+    private string _sizeText;
     private long _size;
+    private double _percent;
 
     public FileEntryViewModel(FileEntry model)
     {
         _model = model;
         Children = new ObservableCollection<FileEntryViewModel>();
-        _isExpanded = false;
-        _percent = model.Percentage;
+        _isLoading = false;
         _size = model.FileSize;
         _sizeText = FormatSize(model.FileSize);
-        _isLoading = false;
+        _percent = model.Percentage;
     }
 
     public string Name => _model.FileName;
+
+    public string FullPath => _model.FullPath;
+
+    public string? ParentPath => _model.ParentPath;
+
+    public FileType Type => _model.FileType;
 
     public long Size
     {
@@ -37,22 +41,6 @@ public class FileEntryViewModel : ViewModelBase
         set => SetProperty(ref _sizeText, value);
     }
 
-    public FileType Type => _model.FileType;
-
-    public string? ParentPath => _model.ParentPath;
-
-    public string FullPath => _model.FullPath;
-
-    public FileState State => _model.FileState;
-
-    public ObservableCollection<FileEntryViewModel> Children { get; }
-
-    public bool IsExpanded
-    {
-        get => _isExpanded;
-        set => SetProperty(ref _isExpanded, value);
-    }
-
     public double Percent
     {
         get => _percent;
@@ -64,6 +52,8 @@ public class FileEntryViewModel : ViewModelBase
         get => _isLoading;
         set => SetProperty(ref _isLoading, value);
     }
+
+    public ObservableCollection<FileEntryViewModel> Children { get; }
 
     public void MarkAsLoading()
     {
@@ -82,17 +72,6 @@ public class FileEntryViewModel : ViewModelBase
         OnPropertyChanged(nameof(SizeText));
         OnPropertyChanged(nameof(Percent));
         OnPropertyChanged(nameof(IsLoading));
-    }
-
-    public void RefreshChildren()
-    {
-        Children.Clear();
-
-        foreach (FileEntry child in _model.SubDirectories)
-        {
-            FileEntryViewModel childViewModel = new FileEntryViewModel(child);
-            Children.Add(childViewModel);
-        }
     }
 
     private static string FormatSize(long bytes)
